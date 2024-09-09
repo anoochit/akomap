@@ -3,121 +3,88 @@ import 'dart:developer';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:geolocator/geolocator.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
-import 'package:location/location.dart';
 
 import 'package:flutter/services.dart' show ByteData, rootBundle;
 
 class HomePage extends StatefulWidget {
-  HomePage({Key key}) : super(key: key);
+  const HomePage({super.key});
 
   @override
-  _HomePageState createState() => _HomePageState();
+  State<HomePage> createState() => _HomePageState();
 }
 
 class _HomePageState extends State<HomePage> {
-  static double _latitude = 14.9430146;
-  static double _logitude = 102.0456841;
+  GoogleMapController? _mapController;
+  Marker? _marker;
+  Circle? _circle;
 
-  Location _location = new Location();
+  String? _mapStyle;
 
-  bool _serviceEnabled;
-  PermissionStatus _permissionGranted;
-
-  LocationData _locationData;
-  StreamSubscription<LocationData> _locationSubscription;
-
-  GoogleMapController _mapController;
-  Marker _marker;
-  Circle _circle;
+  late StreamSubscription<Position> _positionStream;
+  late Position _locationData;
 
   Future<Uint8List> getMarker() async {
-    ByteData byteData = await DefaultAssetBundle.of(context).load("assets/car_icon.png");
+    ByteData byteData =
+        await DefaultAssetBundle.of(context).load("assets/car_icon.png");
     return byteData.buffer.asUint8List();
   }
 
-  static CameraPosition _initCameraPosition = CameraPosition(
-    target: LatLng(_latitude, _logitude),
-    zoom: 15,
+  final CameraPosition _initCameraPosition = const CameraPosition(
+    target: LatLng(14.957169, 102.043775),
+    zoom: 17,
   );
 
-  updateMarker(LocationData locationData, Uint8List imageMarker) {
-    LatLng latLng = LatLng(locationData.latitude, locationData.longitude);
-    setState(() {
-      _marker = Marker(
-          markerId: MarkerId("car"),
-          position: latLng,
-          rotation: locationData.heading,
-          draggable: false,
-          zIndex: 2,
-          flat: true,
-          anchor: Offset(0.5, 0.5),
-          icon: BitmapDescriptor.fromBytes(imageMarker));
+  updateMarker(Position locationData, Uint8List imageMarker) async {
+    LatLng latLng = LatLng(
+      locationData.latitude,
+      locationData.longitude,
+    );
 
-      _circle = Circle(
-          circleId: CircleId("car_circle"),
-          radius: locationData.accuracy,
-          zIndex: 1,
-          strokeColor: Colors.blue,
-          strokeWidth: 1,
-          center: latLng,
-          fillColor: Colors.blue.withAlpha(50));
-    });
+    _marker = Marker(
+      markerId: const MarkerId("car"),
+      position: latLng,
+      rotation: locationData.heading,
+      zIndex: 2,
+      anchor: const Offset(0.5, 0.5),
+      icon: BitmapDescriptor.bytes(
+        imageMarker,
+        width: 24,
+      ),
+    );
+
+    _circle = Circle(
+      circleId: const CircleId("car_circle"),
+      radius: locationData.accuracy,
+      zIndex: 1,
+      strokeColor: Colors.blue,
+      strokeWidth: 1,
+      center: latLng,
+      fillColor: Colors.blue.withAlpha(50),
+    );
+
+    // move camera position
+    await _mapController!.animateCamera(CameraUpdate.newCameraPosition(
+      CameraPosition(
+        target: latLng,
+        zoom: 17,
+      ),
+    ));
+    log('update camera!');
+
+    setState(() {});
   }
 
-  getCurrentLocation() async {
-    _serviceEnabled = await _location.serviceEnabled();
-    if (!_serviceEnabled) {
-      _serviceEnabled = await _location.requestService();
-      if (!_serviceEnabled) {
-        return;
-      }
-    }
-
-    _permissionGranted = await _location.hasPermission();
-    if (_permissionGranted == PermissionStatus.denied) {
-      _permissionGranted = await _location.requestPermission();
-      if (_permissionGranted != PermissionStatus.granted) {
-        return;
-      }
-    }
-
-    _locationData = await _location.getLocation();
-
-    // get marker icon
-    Uint8List imageMarker = await getMarker();
-
-    updateMarker(_locationData, imageMarker);
-
-    _locationSubscription = _location.onLocationChanged.listen((LocationData currentLocation) {
-      log(currentLocation.latitude.toString() + "," + currentLocation.longitude.toString());
-
-      if (_mapController != null) {
-        updateMarker(currentLocation, imageMarker);
-        _mapController.animateCamera(CameraUpdate.newCameraPosition(new CameraPosition(
-            target: LatLng(currentLocation.latitude, currentLocation.longitude),
-            zoom: 18,
-            tilt: 0)));
-      }
-    });
-  }
-
-  setMapStyle() {
-    var brightness = MediaQuery.platformBrightnessOf(context);
-    if (brightness == Brightness.light) {
-      rootBundle.loadString('assets/mapstyle.json').then((string) {
-        _mapController.setMapStyle(string);
-      });
-    } else {
-      rootBundle.loadString('assets/mapstyle_dark.json').then((string) {
-        _mapController.setMapStyle(string);
-      });
-    }
+  setMapStyle() async {
+    _mapStyle = await rootBundle.loadString('assets/mapstyle.json');
   }
 
   @override
   void initState() {
     super.initState();
+    // get mapstyle
+    setMapStyle();
     // get current location
     getCurrentLocation();
   }
@@ -125,22 +92,78 @@ class _HomePageState extends State<HomePage> {
   @override
   void dispose() {
     super.dispose();
-    _locationSubscription.cancel();
+    _positionStream.cancel();
   }
 
   @override
   Widget build(BuildContext context) {
-    setMapStyle();
     return Scaffold(
       body: GoogleMap(
-        zoomControlsEnabled: false,
+        style: _mapStyle,
         initialCameraPosition: _initCameraPosition,
-        markers: Set.of((_marker != null) ? [_marker] : []),
-        circles: Set.of((_circle != null) ? [_circle] : []),
+        markers: (_marker == null) ? {} : {_marker!},
+        circles: (_circle == null) ? {} : {_circle!},
+        compassEnabled: true,
         onMapCreated: (GoogleMapController controller) {
           _mapController = controller;
         },
       ),
     );
+  }
+
+  final LocationSettings locationSettings = const LocationSettings(
+    accuracy: LocationAccuracy.high,
+    distanceFilter: 5,
+  );
+
+  Future<void> getCurrentLocation() async {
+    bool serviceEnabled;
+    LocationPermission permission;
+
+    // Test if location services are enabled.
+    serviceEnabled = await Geolocator.isLocationServiceEnabled();
+    if (!serviceEnabled) {
+      // Location services are not enabled don't continue
+      // accessing the position and request users of the
+      // App to enable the location services.
+      return Future.error('Location services are disabled.');
+    }
+
+    permission = await Geolocator.checkPermission();
+    if (permission == LocationPermission.denied) {
+      permission = await Geolocator.requestPermission();
+      if (permission == LocationPermission.denied) {
+        // Permissions are denied, next time you could try
+        // requesting permissions again (this is also where
+        // Android's shouldShowRequestPermissionRationale
+        // returned true. According to Android guidelines
+        // your App should show an explanatory UI now.
+        return Future.error('Location permissions are denied');
+      }
+    }
+
+    if (permission == LocationPermission.deniedForever) {
+      // Permissions are denied forever, handle appropriately.
+      return Future.error(
+          'Location permissions are permanently denied, we cannot request permissions.');
+    }
+
+    // When we reach here, permissions are granted and we can
+    // continue accessing the position of the device.
+
+    // get marker icon
+    Uint8List imageMarker = await getMarker();
+    _locationData = await Geolocator.getCurrentPosition();
+
+    // update marker
+    updateMarker(_locationData, imageMarker);
+
+    _positionStream = Geolocator.getPositionStream(
+      locationSettings: locationSettings,
+    ).listen((Position? position) {
+      // update marker
+      updateMarker(position!, imageMarker);
+      log('current position = $position ');
+    });
   }
 }
